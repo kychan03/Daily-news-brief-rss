@@ -20,12 +20,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
         
-      - name: Debug env (safe)
+      - name: Debug secrets (safe)
+        env:
+          NOTION_TOKEN: $ secrets.NOTION_TOKEN 
+          NOTION_DATABASE_ID: $ secrets.NOTION_DATABASE_ID 
         run: |
+          echo "TOKEN starts with ntn_: $(echo "$NOTION_TOKEN" | cut -c1-4)"
+          echo "TOKEN length: ${#NOTION_TOKEN}"
           echo "DBID length: ${#NOTION_DATABASE_ID}"
           echo "DBID head: ${NOTION_DATABASE_ID:0:8}"
-        env:
-          NOTION_DATABASE_ID: $ secrets.NOTION_DATABASE_ID 
+          echo "DBID tail: ${NOTION_DATABASE_ID: -6}"
 
       - name: Run RSS ingestion
         env:
