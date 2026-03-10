@@ -73,7 +73,7 @@ def pick_summary(entry) -> str | None:
             return re.sub(r"\s+", " ", txt).strip()
     return None
 
-def ingest_feed(feed_url: str, source: str, language: str, region: str, category: str, limit: int = 15):
+def ingest_feed(feed_url: str, source: str, language: str, region: str, category: str, limit: int = 40):
     feed = feedparser.parse(feed_url)
     if feed.bozo:
         print(f"[WARN] feed parse issue: {feed_url} err={feed.bozo_exception}")
