@@ -1,0 +1,28 @@
+name: Brief finalize (23:55 KST)
+
+on:
+  schedule:
+    - cron: "55 14 * * *"  # 23:55 KST
+  workflow_dispatch:
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run (finalize)
+        env:
+          NOTION_TOKEN: ${{secrets.NOTION_TOKEN}}
+          NOTION_DATABASE_ID: ${{secrets.NOTION_DATABASE_ID}}
+          NOTION_BRIEFS_DATABASE_ID: ${{secrets.NOTION_BRIEFS_DATABASE_ID}}
+          BRIEF_MODE: finalize
+        run: python rss_to_notion.py
