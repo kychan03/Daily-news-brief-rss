@@ -1,21 +1,24 @@
-import os, re, datetime, json
+import os
+import re
+import datetime
+import json
 import requests
 import feedparser
 from dateutil import parser as dateparser
 from google import genai
 
 # ========= ENV =========
-NOTION_TOKEN = os.environ["NOTION_TOKEN"]
-NEWS_DATABASE_ID = os.environ["NOTION_DATABASE_ID"]
-BRIEFS_DATABASE_ID = os.environ["NOTION_BRIEFS_DATABASE_ID"]
-HUB_PAGE_ID = os.environ["NOTION_HUB_PAGE_ID"]
+NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
+NEWS_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
+BRIEFS_DATABASE_ID = os.environ.get("NOTION_BRIEFS_DATABASE_ID")
+HUB_PAGE_ID = os.environ.get("NOTION_HUB_PAGE_ID")
 BRIEF_MODE = os.environ.get("BRIEF_MODE", "update").strip().lower()
 
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
 # ========= CONST =========
-NOTION_API = "https://api.notion.com/v1"
+NOTION_API = "[https://api.notion.com/v1](https://api.notion.com/v1)"
 NOTION_VERSION = "2022-06-28"
 
 HEADERS = {
@@ -28,6 +31,7 @@ KST = datetime.timezone(datetime.timedelta(hours=9))
 
 # ========= HELPERS =========
 def normalize_id(s: str) -> str:
+    if not s: return ""
     return re.sub(r"[^0-9a-fA-F]", "", s)
 
 def today_kst_date_str() -> str:
@@ -79,7 +83,7 @@ def notion_append_block_children(block_id: str, children: list):
 
 def notion_delete_block(block_id: str):
     return notion_patch(f"/blocks/{block_id}", {"archived": True})
-# ========= HUB TOGGLE REPLACE =========
+
 def find_toggle_block_id_by_title(page_id: str, toggle_title: str) -> str | None:
     res = notion_list_block_children(page_id)
     for b in res.get("results", []):
@@ -104,7 +108,9 @@ def replace_toggle_children(toggle_block_id: str, new_blocks: list):
     for ch in old_children:
         notion_delete_block(ch["id"])
     if new_blocks:
-        notion_append_block_children(toggle_block_id, new_blocks)
+        # 노션 API 제한: 한 번에 최대 100개 블록
+        for i in range(0, len(new_blocks), 100):
+            notion_append_block_children(toggle_block_id, new_blocks[i:i+100])
 
 # ========= RSS INGEST =========
 def parse_published(entry) -> str | None:
@@ -114,12 +120,6 @@ def parse_published(entry) -> str | None:
                 return dateparser.parse(entry[key]).isoformat()
             except Exception:
                 pass
-    if getattr(entry, "published_parsed", None):
-        try:
-            dt = datetime.datetime(*entry.published_parsed[:6], tzinfo=datetime.timezone.utc)
-            return dt.isoformat()
-        except Exception:
-            pass
     return None
 
 def pick_summary(entry) -> str | None:
@@ -136,17 +136,12 @@ def news_exists_by_url(url: str) -> bool:
 
 def ingest_feed(feed_url: str, source: str, language: str, region: str, category: str, limit: int = 40):
     feed = feedparser.parse(feed_url)
-    if getattr(feed, "bozo", False):
-        print(f"[WARN] feed parse issue: {feed_url} err={feed.bozo_exception}")
-
     count_new = 0
     for entry in feed.entries[:limit]:
         title = (entry.get("title") or "").strip()
         link = (entry.get("link") or "").strip()
-        if not title or not link:
-            continue
-        if news_exists_by_url(link):
-            continue
+        if not title or not link: continue
+        if news_exists_by_url(link): continue
 
         published = parse_published(entry)
         summary = pick_summary(entry)
@@ -166,20 +161,13 @@ def ingest_feed(feed_url: str, source: str, language: str, region: str, category
 
         notion_create_page(NEWS_DATABASE_ID, props)
         count_new += 1
-
     print(f"[OK] {source} new items: {count_new}")
-```
 
----
-
-## rss_to_[notion.py](http://notion.py) (PART 3/4)
-
-```python
 # ========= FETCH CANDIDATES =========
 def fetch_today_candidates(region: str, limit: int):
     start_iso = iso_today_start_kst()
     payload = {
-        "page_size": min(100, limit * 10),
+        "page_size": min(100, limit * 3),
         "filter": {
             "and": [
                 {"or": [
@@ -192,7 +180,6 @@ def fetch_today_candidates(region: str, limit: int):
         },
         "sorts": [
             {"property": "Published", "direction": "descending"},
-            {"property": "Created", "direction": "descending"},
         ],
     }
     res = notion_query_db(NEWS_DATABASE_ID, payload)
@@ -214,75 +201,64 @@ def build_top_stories_text(news_items):
     for n in news_items:
         title = page_title_from_news(n)
         url = page_url_from_news(n)
-        summ = page_summary_from_news(n)
-        if summ:
-            lines.append(f"- {title}\n\t- 요약: {summ}\n\t- 링크: {url}")
-        else:
-            lines.append(f"- {title}\n\t- 링크: {url}")
+        lines.append(f"- {title}\n  링크: {url}")
     return "\n".join(lines)
 
 # ========= GEMINI =========
 def gemini_generate_keywords_and_stocks(news_items):
     client = genai.Client(api_key=GEMINI_API_KEY)
-    items = [{"title": page_title_from_news(n), "summary": page_summary_from_news(n), "url": page_url_from_news(n)} for n in news_items]
+    items = [{"title": page_title_from_news(n), "summary": page_summary_from_news(n)} for n in news_items]
 
     prompt = f"""
-너는 뉴스 브리프 편집자이자 시장 분석가야.
-아래 뉴스 목록을 기반으로 한국어로만 답해.
+너는 뉴스 편집자이자 시장 분석가야. 아래 뉴스 목록을 기반으로 한국어로만 답해.
+반드시 JSON 형식으로만 출력하고 마크다운 코드 블록(```json)은 제외해.
 
-[뉴스 목록(JSON)]
+[뉴스 목록]
 {json.dumps(items, ensure_ascii=False)}
 
-출력은 반드시 JSON 하나만. 마크다운/설명 금지.
 스키마:
 {{
   "keywords": [
-    {{158}}
+    {{"keyword": "단어", "one_line": "설명"}}
   ],
   "stock_ideas": [
     {{
       "direction": "bullish|bearish",
-      "keyword": "...",
-      "thesis": "...",
-      "korea": [{{159}}],
-      "us": ["ticker":"...","name":"...","why":"..."]
+      "keyword": "키워드",
+      "thesis": "이유",
+      "korea": [{{"ticker":"코드","name":"종목명","why":"이유"}}],
+      "us": [{{"ticker":"티커","name":"종목명","why":"이유"}}]
     }}
   ]
 }}
-
-규칙:
-- keywords는 정확히 10개.
-- 티커는 확신 없으면 빈 배열([]).
-- 투자 조언이 아니라 아이디어 톤.
+규칙: 키워드는 정확히 10개 추출.
 """
-
     resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
     text = resp.text.strip()
+    # JSON 문자열만 추출 (마크다운 방어)
     text = re.sub(r"^```json\s*", "", text)
     text = re.sub(r"\s*```$", "", text).strip()
     return json.loads(text)
 
-# ========= BRIEF UPSERT + HUB REPLACE =========
+# ========= BRIEF UPSERT =========
 def upsert_today_brief(news_kr, news_us, finalize: bool):
     date_str = today_kst_date_str()
     title = f"Daily Brief — {date_str}"
-
     combined = news_kr + news_us
-    source_count = len(combined)
-
+    
     top_stories_text = build_top_stories_text(combined)
     llm = gemini_generate_keywords_and_stocks(combined)
 
-    keywords_lines = [f'- {k["keyword"]}: {k["one_line"]}' for k in llm["keywords"]]
+    keywords_lines = [f'- {k["keyword"]}: {k["one_line"]}' for k in llm.get("keywords", [])]
     keywords_text = "\n".join(keywords_lines)
 
     ideas_lines = []
     for idea in llm.get("stock_ideas", []):
         ideas_lines.append(f'- [{idea["direction"]}] {idea["keyword"]}: {idea["thesis"]}')
         for s in idea.get("korea", []):
-            ideas_lines.append(f'  - KR {s.get("ticker","")} {s.get("name","")}: {s.get("why","")}')
+            ideas_lines.append(f'  · KR {s.get("ticker","")} {s.get("name","")}: {s.get("why","")}')
         for s in idea.get("us", []):
-            ideas_lines.append(f'  - US {s.get("ticker","")} {s.get("name","")}: {s.get("why","")}')
+            ideas_lines.append(f'  · US {s.get("ticker","")} {s.get("name","")}: {s.get("why","")}')
     stock_ideas_text = "\n".join(ideas_lines).strip()
 
     find_payload = {"filter": {"property": "Title", "title": {"equals": title}}}
@@ -293,7 +269,7 @@ def upsert_today_brief(news_kr, news_us, finalize: bool):
         "Title": {"title": [{"text": {"content": title}}]},
         "Date": {"date": {"start": date_str}},
         "Status": {"select": {"name": "Final" if finalize else "Draft"}},
-        "Source count": {"number": float(source_count)},
+        "Source count": {"number": float(len(combined))},
         "Keywords": {"rich_text": [{"text": {"content": keywords_text[:2000]}}]},
         "Top stories": {"rich_text": [{"text": {"content": top_stories_text[:2000]}}]},
         "Stock ideas": {"rich_text": [{"text": {"content": stock_ideas_text[:2000]}}]},
@@ -302,62 +278,56 @@ def upsert_today_brief(news_kr, news_us, finalize: bool):
     if existing:
         page_id = existing["id"]
         notion_update_page(page_id, props)
-        print(f"[OK] Brief updated: {title} ({'Final' if finalize else 'Draft'})")
     else:
         created = notion_create_page(BRIEFS_DATABASE_ID, props)
         page_id = created["id"]
-        print(f"[OK] Brief created: {title} ({'Final' if finalize else 'Draft'})")
 
-    # hub replace (toggle children fully replaced)
+    # Hub Update
     toggle_id = find_toggle_block_id_by_title(HUB_PAGE_ID, "AUTO_BRIEF")
-    if not toggle_id:
-        print("[WARN] AUTO_BRIEF toggle not found on hub page; skipping hub update")
-    else:
+    if toggle_id:
         blocks = [
-            to_paragraph(f"{title} ({'Final' if finalize else 'Draft'})"),
-            to_paragraph(f"Last updated: {datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST"),
+            to_paragraph(f"📌 {title} ({'Final' if finalize else 'Draft'})"),
+            to_paragraph(f"업데이트: {datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST"),
             to_paragraph(""),
-            to_paragraph("Keywords"),
+            to_paragraph("✅ 핵심 키워드"),
             to_paragraph(keywords_text),
             to_paragraph(""),
-            to_paragraph("Top stories"),
-            to_paragraph(top_stories_text),
-            to_paragraph(""),
-            to_paragraph("Stock ideas"),
+            to_paragraph("📈 투자 아이디어"),
             to_paragraph(stock_ideas_text),
         ]
         replace_toggle_children(toggle_id, blocks)
-
+    
     return page_id
 
 def mark_used_in_brief(news_items):
     for n in news_items:
         notion_update_page(n["id"], {"Used in brief": {"checkbox": True}})
-    print(f"[OK] Marked used in brief: {len(news_items)}")
 
 if __name__ == "__main__":
     NEWS_DATABASE_ID = normalize_id(NEWS_DATABASE_ID)
     BRIEFS_DATABASE_ID = normalize_id(BRIEFS_DATABASE_ID)
+    HUB_PAGE_ID = normalize_id(HUB_PAGE_ID)
 
     FEEDS = [
-        # KR
-        ("https://rss.donga.com/total.xml", "Other", "KO", "KR", "Top"),
-        ("https://www.mk.co.kr/rss/30000001/", "Other", "KO", "KR", "Top"),
-        ("https://www.khan.co.kr/rss/rssdata/total_news.xml", "Other", "KO", "KR", "Top"),
-        # US (Google News)
+        ("https://rss.donga.com/total.xml", "Donga", "KO", "KR", "Top"),
+        ("https://www.mk.co.kr/rss/30000001/", "MK", "KO", "KR", "Top"),
         ("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", "Google News", "EN", "US", "Top"),
-        ("https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=en-US&gl=US&ceid=US:en", "Google News", "EN", "US", "Business"),
     ]
 
-    for feed_url, source, language, region, category in FEEDS:
-        ingest_feed(feed_url, source, language, region, category, limit=40)
+    for f_url, src, lang, reg, cat in FEEDS:
+        try:
+            ingest_feed(f_url, src, lang, reg, cat)
+        except Exception as e:
+            print(f"[ERR] Feed failed: {src} - {e}")
 
     news_kr = fetch_today_candidates("KR", 7)
     news_us = fetch_today_candidates("US", 3)
 
-    finalize = (BRIEF_MODE == "finalize")
-    upsert_today_brief(news_kr, news_us, finalize=finalize)
-
-    if finalize:
-        mark_used_in_brief(news_kr + news_us)
-
+    if news_kr or news_us:
+        is_final = (BRIEF_MODE == "finalize")
+        upsert_today_brief(news_kr, news_us, finalize=is_final)
+        if is_final:
+            mark_used_in_brief(news_kr + news_us)
+        print("[FINISH] Brief processing complete.")
+    else:
+        print("[SKIP] No new news candidates found.")
