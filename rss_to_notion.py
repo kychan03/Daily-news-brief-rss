@@ -7,7 +7,7 @@ import feedparser
 from dateutil import parser as dateparser
 from google import genai
 
-# ========= ENV =========
+# ========= ENV (환경 변수) =========
 NOTION_TOKEN = os.environ.get("NOTION_TOKEN")
 NEWS_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 BRIEFS_DATABASE_ID = os.environ.get("NOTION_BRIEFS_DATABASE_ID")
@@ -17,8 +17,9 @@ BRIEF_MODE = os.environ.get("BRIEF_MODE", "update").strip().lower()
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.0-flash")
 
-# ========= CONST =========
-NOTION_API = "[https://api.notion.com/v1](https://api.notion.com/v1)"
+# ========= CONST (상수) =========
+# 아래 URL에 대괄호([])나 소괄호(())가 절대 포함되지 않아야 합니다.
+NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
 
 HEADERS = {
@@ -29,9 +30,10 @@ HEADERS = {
 
 KST = datetime.timezone(datetime.timedelta(hours=9))
 
-# ========= HELPERS =========
+# ========= HELPERS (유틸리티) =========
 def normalize_id(s: str) -> str:
     if not s: return ""
+    # 노션 ID에서 하이픈 제거 및 순수 16진수만 추출
     return re.sub(r"[^0-9a-fA-F]", "", s)
 
 def today_kst_date_str() -> str:
@@ -47,19 +49,22 @@ def strip_html(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
-# ========= NOTION API =========
+# ========= NOTION API 호출 함수 =========
 def notion_get(path: str):
-    r = requests.get(f"{NOTION_API}{path}", headers=HEADERS, timeout=30)
+    url = f"{NOTION_API}{path}"
+    r = requests.get(url, headers=HEADERS, timeout=30)
     r.raise_for_status()
     return r.json()
 
 def notion_post(path: str, payload: dict):
-    r = requests.post(f"{NOTION_API}{path}", headers=HEADERS, json=payload, timeout=30)
+    url = f"{NOTION_API}{path}"
+    r = requests.post(url, headers=HEADERS, json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
 
 def notion_patch(path: str, payload: dict):
-    r = requests.patch(f"{NOTION_API}{path}", headers=HEADERS, json=payload, timeout=30)
+    url = f"{NOTION_API}{path}"
+    r = requests.patch(url, headers=HEADERS, json=payload, timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -108,11 +113,10 @@ def replace_toggle_children(toggle_block_id: str, new_blocks: list):
     for ch in old_children:
         notion_delete_block(ch["id"])
     if new_blocks:
-        # 노션 API 제한: 한 번에 최대 100개 블록
         for i in range(0, len(new_blocks), 100):
             notion_append_block_children(toggle_block_id, new_blocks[i:i+100])
 
-# ========= RSS INGEST =========
+# ========= RSS 데이터 처리 =========
 def parse_published(entry) -> str | None:
     for key in ["published", "updated"]:
         if entry.get(key):
@@ -163,11 +167,11 @@ def ingest_feed(feed_url: str, source: str, language: str, region: str, category
         count_new += 1
     print(f"[OK] {source} new items: {count_new}")
 
-# ========= FETCH CANDIDATES =========
+# ========= 후보 뉴스 추출 =========
 def fetch_today_candidates(region: str, limit: int):
     start_iso = iso_today_start_kst()
     payload = {
-        "page_size": min(100, limit * 3),
+        "page_size": 100,
         "filter": {
             "and": [
                 {"or": [
@@ -204,43 +208,41 @@ def build_top_stories_text(news_items):
         lines.append(f"- {title}\n  링크: {url}")
     return "\n".join(lines)
 
-# ========= GEMINI =========
+# ========= Gemini AI 연동 =========
 def gemini_generate_keywords_and_stocks(news_items):
     client = genai.Client(api_key=GEMINI_API_KEY)
     items = [{"title": page_title_from_news(n), "summary": page_summary_from_news(n)} for n in news_items]
 
     prompt = f"""
-너는 뉴스 편집자이자 시장 분석가야. 아래 뉴스 목록을 기반으로 한국어로만 답해.
-반드시 JSON 형식으로만 출력하고 마크다운 코드 블록(```json)은 제외해.
+너는 전문 뉴스 에디터이자 금융 분석가야. 아래 뉴스 목록을 분석해서 한국어로 응답해.
+반드시 순수 JSON 데이터만 출력하고, 마크다운 코드 블록(```json)이나 다른 설명은 절대 포함하지 마.
 
-[뉴스 목록]
+[뉴스 데이터]
 {json.dumps(items, ensure_ascii=False)}
 
-스키마:
+스키마 형식:
 {{
   "keywords": [
-    {{"keyword": "단어", "one_line": "설명"}}
+    {{"keyword": "키워드", "one_line": "한줄 요약"}}
   ],
   "stock_ideas": [
     {{
       "direction": "bullish|bearish",
-      "keyword": "키워드",
-      "thesis": "이유",
-      "korea": [{{"ticker":"코드","name":"종목명","why":"이유"}}],
-      "us": [{{"ticker":"티커","name":"종목명","why":"이유"}}]
+      "keyword": "관련 테마",
+      "thesis": "분석 이유",
+      "korea": [{{"ticker":"종목코드","name":"종목명","why":"선정이유"}}],
+      "us": [{{"ticker":"티커","name":"종목명","why":"선정이유"}}]
     }}
   ]
 }}
-규칙: 키워드는 정확히 10개 추출.
 """
     resp = client.models.generate_content(model=GEMINI_MODEL, contents=prompt)
     text = resp.text.strip()
-    # JSON 문자열만 추출 (마크다운 방어)
-    text = re.sub(r"^```json\s*", "", text)
-    text = re.sub(r"\s*```$", "", text).strip()
+    # 혹시 모를 마크다운 기호 제거
+    text = text.replace("```json", "").replace("```", "").strip()
     return json.loads(text)
 
-# ========= BRIEF UPSERT =========
+# ========= 브리프 생성 및 업데이트 =========
 def upsert_today_brief(news_kr, news_us, finalize: bool):
     date_str = today_kst_date_str()
     title = f"Daily Brief — {date_str}"
@@ -282,17 +284,16 @@ def upsert_today_brief(news_kr, news_us, finalize: bool):
         created = notion_create_page(BRIEFS_DATABASE_ID, props)
         page_id = created["id"]
 
-    # Hub Update
     toggle_id = find_toggle_block_id_by_title(HUB_PAGE_ID, "AUTO_BRIEF")
     if toggle_id:
         blocks = [
             to_paragraph(f"📌 {title} ({'Final' if finalize else 'Draft'})"),
-            to_paragraph(f"업데이트: {datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST"),
+            to_paragraph(f"마지막 업데이트: {datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M')} KST"),
             to_paragraph(""),
-            to_paragraph("✅ 핵심 키워드"),
+            to_paragraph("✅ 오늘의 키워드"),
             to_paragraph(keywords_text),
             to_paragraph(""),
-            to_paragraph("📈 투자 아이디어"),
+            to_paragraph("📈 시장 아이디어"),
             to_paragraph(stock_ideas_text),
         ]
         replace_toggle_children(toggle_id, blocks)
@@ -303,15 +304,17 @@ def mark_used_in_brief(news_items):
     for n in news_items:
         notion_update_page(n["id"], {"Used in brief": {"checkbox": True}})
 
+# ========= 실행 메인 루틴 =========
 if __name__ == "__main__":
+    # ID 정규화 (하이픈 등 제거)
     NEWS_DATABASE_ID = normalize_id(NEWS_DATABASE_ID)
     BRIEFS_DATABASE_ID = normalize_id(BRIEFS_DATABASE_ID)
     HUB_PAGE_ID = normalize_id(HUB_PAGE_ID)
 
     FEEDS = [
-        ("https://rss.donga.com/total.xml", "Donga", "KO", "KR", "Top"),
-        ("https://www.mk.co.kr/rss/30000001/", "MK", "KO", "KR", "Top"),
-        ("https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en", "Google News", "EN", "US", "Top"),
+        ("[https://rss.donga.com/total.xml](https://rss.donga.com/total.xml)", "Donga", "KO", "KR", "Top"),
+        ("[https://www.mk.co.kr/rss/30000001/](https://www.mk.co.kr/rss/30000001/)", "MK", "KO", "KR", "Top"),
+        ("[https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en](https://news.google.com/rss?hl=en-US&gl=US&ceid=US:en)", "Google News", "EN", "US", "Top"),
     ]
 
     for f_url, src, lang, reg, cat in FEEDS:
@@ -328,6 +331,7 @@ if __name__ == "__main__":
         upsert_today_brief(news_kr, news_us, finalize=is_final)
         if is_final:
             mark_used_in_brief(news_kr + news_us)
-        print("[FINISH] Brief processing complete.")
+        print(f"[SUCCESS] {datetime.datetime.now(KST)} - 브리프 작업 완료")
     else:
-        print("[SKIP] No new news candidates found.")
+        print("[SKIP] 새로운 뉴스 데이터가 없습니다.")
+        
