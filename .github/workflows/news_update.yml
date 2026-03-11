@@ -25,5 +25,6 @@ jobs:
           NOTION_DATABASE_ID: ${{secrets.NOTION_DATABASE_ID}}
           NOTION_BRIEFS_DATABASE_ID: ${{secrets.NOTION_BRIEFS_DATABASE_ID}}
           GEMINI_API_KEY: ${{secrets.GEMINI_API_KEY}}
+          NOTION_HUB_PAGE_ID: ${{secrets.NOTION_HUB_PAGE_ID}}
           BRIEF_MODE: update
         run: python rss_to_notion.py
