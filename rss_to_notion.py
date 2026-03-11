@@ -318,6 +318,17 @@ def upsert_today_brief(news_kr, news_us, finalize: bool):
         page_id = created["id"]
         print(f"[OK] Brief created: {title} ({'Final' if finalize else 'Draft'})")
 
+    body_text = (
+    f"마지막 업데이트: {datetime.datetime.now(KST).strftime('%Y-%m-%d %H:%M')} (KST)\n\n"
+    f"[{title}] ({'Final' if finalize else 'Draft'})\n\n"
+    f"### Keywords\n{keywords_text}\n\n"
+    f"### Top stories\n{top_stories_text}\n\n"
+    f"### Stock ideas\n{stock_ideas_text}\n"
+)
+
+# 본문 추가(우선 append)
+notion_replace_page_content(page_id, body_text)
+
     return page_id  # 혹시 나중에 본문 업데이트까지 하고 싶으면 쓰기 좋음
 
 def mark_used_in_brief(news_items):
