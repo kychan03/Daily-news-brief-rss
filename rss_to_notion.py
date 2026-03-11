@@ -449,34 +449,22 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"[ERR] Feed failed: {src} - {e}")
 
-    news_kr = fetch_today_candidates("KR", 7)
+    news_kr = fetch_today_candidates("KR", 5)
     news_us = fetch_today_candidates("US", 3)
 
     if news_kr or news_us:
+        # 이전에 429 에러가 났었다면 안전하게 5초 정도 쉬었다가 Gemini 호출
+        import time
+        print("Gemini 분석을 위해 잠시 대기 중...")
+        time.sleep(5) 
+
         is_final = (BRIEF_MODE == "finalize")
-        upsert_today_brief(news_kr, news_us, finalize=is_final)
-
-        # Final 모드 + Gemini 성공일 때만 Used in brief 체크
-        # (Gemini 실패 시 upsert_today_brief 내부에서 finalize=False로 강제됨)
-        if is_final:
-            # upsert_today_brief가 finalize를 false로 바꿀 수 있으니,
-            # 여기서는 BRIEF_MODE 기준으로만 진행하지 않도록 안전하게 하려면
-            # upsert_today_brief 반환값/상태를 받아 판단하도록 개선 가능.
-            # 현 구조에서는 "Final 실행인데 Gemini 실패"면 mark가 실행될 수 있으므로
-            # 간단히 BRIEF_MODE일 때 mark하기 전에 다시 한 번 Gemini 사용 여부를 확인하는 대신,
-            # upsert_today_brief에서 실패 시 Draft로 저장하는 것만 보장하고 mark는 아래처럼 조건 강화.
-            pass
-
-        # mark_used_in_brief는 Final일 때만 실행하도록(안전)
-        if BRIEF_MODE == "finalize":
-            # Draft로 저장된 경우에는 Used in brief를 마킹하면 안 되므로,
-            # 실무에서는 'Status'를 다시 조회해 체크하는 게 가장 안전합니다.
-            # 여기서는 간단히 "Gemini가 정상 호출 가능한 환경"에서만 Final을 쓸 것을 전제로 둡니다.
-            # 필요하면 "Status를 다시 조회해서 Final일 때만 mark"로 더 강화 가능합니다.
-            mark_used_in_brief(news_kr + news_us)
-
-        print(f"[SUCCESS] {datetime.datetime.now(KST)} - 브리프 작업 완료")
-        if total_new == 0:
-            print("[INFO] 이번 실행에서 새 RSS 아이템은 없었고, 기존 후보(오늘자)로 브리프를 생성/갱신했습니다.")
+        try:
+            upsert_today_brief(news_kr, news_us, finalize=is_final)
+            if is_final:
+                mark_used_in_brief(news_kr + news_us)
+            print(f"[SUCCESS] 브리프 작업이 성공적으로 완료되었습니다.")
+        except Exception as e:
+            print(f"[ERR] 브리프 생성 중 오류 발생: {e}")
     else:
-        print("[SKIP] 새로운 뉴스 데이터가 없습니다.")
+        print("[SKIP] 새로 수집된 뉴스가 없어 작업을 건너뜁니다.")
